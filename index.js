@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const pLimit = require('p-limit');
 const express = require('express'); // Added Express for Render compatibility
+const puppeteer = require('puppeteer'); // Added to dynamically locate the downloaded Chrome binary
 
 // ==========================================
 // 1. DUMMY HTTP SERVER FOR RENDER HEALTH CHECKS
@@ -249,9 +250,9 @@ client.on('message', handleIncomingMessage);
 // 6. UTILITY AND HELPER FUNCTIONS
 // ==========================================
 function resolveBrowserExecutablePath() {
-    // If running on Linux (Render Docker Container), point directly to the pre-installed Chrome binary
+    // If running on Linux (Render Docker Container), resolve via Puppeteer's native dynamic lookup path
     if (process.platform !== 'win32') {
-        return '/usr/bin/google-chrome';
+        return puppeteer.executablePath();
     }
 
     const candidates = [
