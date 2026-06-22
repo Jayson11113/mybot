@@ -5,9 +5,26 @@ const { downloadAudio } = require('./downloader');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
-// 1. IMPORT & INITIALIZE THE QUEUE LIMITER (Allows max 2 heavy downloads at once)
 const pLimit = require('p-limit');
+const express = require('express'); // Added Express for Render compatibility
+
+// ==========================================
+// 1. DUMMY HTTP SERVER FOR RENDER HEALTH CHECKS
+// ==========================================
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('Music Downloader Bot is running smoothly!');
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 Dummy HTTP server listening on port ${PORT}`);
+});
+
+// ==========================================
+// 2. QUEUE & LOGGING CONFIGURATION
+// ==========================================
 const limit = pLimit(2); 
 
 const LOG_PATH = path.join(__dirname, 'bot-debug.log');
@@ -40,6 +57,9 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('⚠️ UNHANDLED REJECTION:', reason);
 });
 
+// ==========================================
+// 3. WHATSAPP CLIENT INITIALIZATION
+// ==========================================
 console.log('🔧 Initializing WhatsApp Client...');
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_DATA_PATH }),
@@ -71,6 +91,9 @@ const client = new Client({
     authTimeoutMs: 300000 
 });
 
+// ==========================================
+// 4. WHATSAPP CLIENT EVENTS
+// ==========================================
 client.on('qr', (qr) => {
     console.log('📱 SCAN THIS QR CODE WITH WHATSAPP:');
     console.log('QR payload:', qr);
@@ -103,6 +126,9 @@ client.on('disconnected', (reason) => {
     console.log('❌ Bot was disconnected:', reason);
 });
 
+// ==========================================
+// 5. MESSAGE PROCESSING LOGIC
+// ==========================================
 const handleIncomingMessage = async (msg) => {
     console.log('==============================');
     console.log('📨 NEW MESSAGE RECEIVED');
@@ -129,7 +155,6 @@ const handleIncomingMessage = async (msg) => {
         console.log('🔥 PLAY COMMAND DETECTED');
 
         const query = text.slice(5).trim();
-
         console.log('🔥 QUERY:', query);
 
         if (!query) {
@@ -138,12 +163,10 @@ const handleIncomingMessage = async (msg) => {
             );
         }
 
-        // Send an immediate confirmation to the chat so the user knows they are in line
         await msg.reply(
             '📥 *Added to queue!* Processing will start shortly. Please wait...'
         );
 
-        // 2. WRAP THE DOWNLOADING AND SENDING LOGIC INSIDE THE LIMITER
         limit(async () => {
             try {
                 console.log(`🎵 [QUEUE] Slot acquired. Starting download for: "${query}"`);
@@ -151,15 +174,12 @@ const handleIncomingMessage = async (msg) => {
                 const result = await downloadAudio(query);
 
                 console.log('🎵 downloadAudio returned:', result);
-
                 const { filePath, isFromCache } = result;
 
                 console.log('📁 FILE PATH:', filePath);
 
                 if (!fs.existsSync(filePath)) {
-                    throw new Error(
-                        `Downloaded file does not exist: ${filePath}`
-                    );
+                    throw new Error(`Downloaded file does not exist: ${filePath}`);
                 }
 
                 console.log('📤 Building media...');
@@ -176,24 +196,19 @@ const handleIncomingMessage = async (msg) => {
 
                 console.log('✅ AUDIO SENT SUCCESSFULLY');
 
-                // Optional: If you aren't storing long term duplicates outside cache, 
-                // you can clean up the temp file here to save disk space:
                 if (!isFromCache && fs.existsSync(filePath)) {
                     fs.unlinkSync(filePath);
                     console.log('🗑️ Temporary download cleared from workspace.');
                 }
 
             } catch (err) {
-                // Check if the error is a duplicate request identified by downloader.js
                 if (err.isDuplicate) {
                     console.log("🤫 Silently dropping duplicate request to prevent double messaging.");
                     return;
                 }
 
                 console.error('❌ PLAY COMMAND FAILED:', err);
-                await msg.reply(
-                    `❌ Failed to play.\n${err.message}`
-                );
+                await msg.reply(`❌ Failed to play.\n${err.message}`);
             }
         });
     }
@@ -222,13 +237,18 @@ kana uine mubvunzo inbox *Gone with the wind* AKA Jay
     }
 };
 
-// Listens exclusively to incoming messages
 client.on('message', handleIncomingMessage);
 
-/**
- * Admin helper.
- */
+// ==========================================
+// 6. UTILITY AND HELPER FUNCTIONS
+// ==========================================
 function resolveBrowserExecutablePath() {
+    // Crucial for Render deployment: If running on Linux inside Docker, 
+    // let Puppeteer automatically detect its built-in container Chrome version.
+    if (process.platform !== 'win32') {
+        return undefined;
+    }
+
     const candidates = [
         path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-146.0.7680.153', 'chrome-win64', 'chrome.exe'),
         path.join(os.homedir(), '.cache', 'puppeteer', 'chrome-headless-shell', 'win64-146.0.7680.153', 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'),
@@ -309,6 +329,9 @@ async function handleGroupCommand(msg, lock) {
     }
 }
 
+// ==========================================
+// 7. START ENGINE
+// ==========================================
 console.log('⏳ Starting client in 5 seconds...');
 setTimeout(() => {
     console.log('🚀 Initializing client...');
