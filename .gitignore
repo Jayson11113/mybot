@@ -1,0 +1,21 @@
+# WhatsApp Session & Cache (CRITICAL: Keeps your WhatsApp login private)
+.wwebjs_auth/
+.wwebjs_cache/
+cache/
+.bytecoder/
+
+# Node Dependencies (Render will install these automatically)
+node_modules/
+
+# Executables & Binaries (Too large for GitHub / Windows only)
+yt-dlp.exe
+ffmpeg/
+ffmpeg.zip
+
+# Logs (Temporary debug files)
+*.log
+
+# Downloaded Media Files
+*.m4a
+*.mp3
+*.mp4

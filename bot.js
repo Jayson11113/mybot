@@ -1,0 +1,318 @@
+console.log('🚀 Starting Bot script...');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const { downloadAudio } = require('./downloader');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// 1. IMPORT & INITIALIZE THE QUEUE LIMITER (Allows max 2 heavy downloads at once)
+const pLimit = require('p-limit');
+const limit = pLimit(2); 
+
+const LOG_PATH = path.join(__dirname, 'bot-debug.log');
+fs.writeFileSync(LOG_PATH, '');
+
+const originalLog = console.log.bind(console);
+const originalError = console.error.bind(console);
+
+function logLine(message) {
+    const line = `[${new Date().toISOString()}] ${message}`;
+    fs.appendFileSync(LOG_PATH, `${line}\n`);
+    originalLog(message);
+}
+
+function logError(message) {
+    const line = `[${new Date().toISOString()}] ${message}`;
+    fs.appendFileSync(LOG_PATH, `${line}\n`);
+    originalError(message);
+}
+
+console.log = (...args) => logLine(args.join(' '));
+console.error = (...args) => logError(args.join(' '));
+
+const AUTH_DATA_PATH = path.join(__dirname, '.wwebjs_auth', `session-${Date.now()}`);
+fs.mkdirSync(AUTH_DATA_PATH, { recursive: true });
+console.log(`🧹 Using fresh auth profile: ${AUTH_DATA_PATH}`);
+
+// Global error handler for uncaught issues
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ UNHANDLED REJECTION:', reason);
+});
+
+console.log('🔧 Initializing WhatsApp Client...');
+const client = new Client({
+    authStrategy: new LocalAuth({ dataPath: AUTH_DATA_PATH }),
+    puppeteer: {
+        executablePath: resolveBrowserExecutablePath(),
+        headless: true,
+        protocolTimeout: 0,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-extensions',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+            '--disable-ipc-flooding-protection',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--no-first-run',
+            '--no-zygote',
+            '--memory-pressure-off',
+            '--disable-blink-features=AutomationControlled',
+            '--window-size=1280,720'
+        ]
+    },
+    authTimeoutMs: 300000 
+});
+
+client.on('qr', (qr) => {
+    console.log('📱 SCAN THIS QR CODE WITH WHATSAPP:');
+    console.log('QR payload:', qr);
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ Loading: ${percent}% - ${message}`);
+});
+
+client.on('authenticated', () => {
+    console.log('✅ Authenticated successfully!');
+});
+
+client.on('ready', async () => {
+    console.log('✅ Bot is ready and listening for commands!');
+    try {
+        const chats = await client.getChats();
+        console.log(`📚 Loaded ${chats.length} chats.`);
+    } catch (err) {
+        console.warn('⚠️ Could not list chats:', err.message);
+    }
+});
+
+client.on('auth_failure', msg => {
+    console.error('❌ Authentication failure:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    console.log('❌ Bot was disconnected:', reason);
+});
+
+const handleIncomingMessage = async (msg) => {
+    console.log('==============================');
+    console.log('📨 NEW MESSAGE RECEIVED');
+    console.log('📨 FROM:', msg.from);
+    console.log('📨 BODY:', msg.body);
+    console.log('==============================');
+
+    const text = msg.body || '';
+
+    if (!text.startsWith('.') && text.toLowerCase() !== 'ping') {
+        console.log('⏭️ Ignoring non-command message');
+        return;
+    }
+
+    console.log(`📩 COMMAND RECEIVED: "${text}" from ${msg.from}`);
+
+    // 🏓 PING
+    if (text.toLowerCase() === 'ping') {
+        return msg.reply('pong 🏓');
+    }
+
+    // 🎵 PLAY
+    if (text.startsWith('.play')) {
+        console.log('🔥 PLAY COMMAND DETECTED');
+
+        const query = text.slice(5).trim();
+
+        console.log('🔥 QUERY:', query);
+
+        if (!query) {
+            return msg.reply(
+                '❌ Please provide a song name.\nExample: *.play faded alan walker*'
+            );
+        }
+
+        // Send an immediate confirmation to the chat so the user knows they are in line
+        await msg.reply(
+            '📥 *Added to queue!* Processing will start shortly. Please wait...'
+        );
+
+        // 2. WRAP THE DOWNLOADING AND SENDING LOGIC INSIDE THE LIMITER
+        limit(async () => {
+            try {
+                console.log(`🎵 [QUEUE] Slot acquired. Starting download for: "${query}"`);
+                console.log('🎵 Calling downloadAudio...');
+                const result = await downloadAudio(query);
+
+                console.log('🎵 downloadAudio returned:', result);
+
+                const { filePath, isFromCache } = result;
+
+                console.log('📁 FILE PATH:', filePath);
+
+                if (!fs.existsSync(filePath)) {
+                    throw new Error(
+                        `Downloaded file does not exist: ${filePath}`
+                    );
+                }
+
+                console.log('📤 Building media...');
+                const media = await buildMessageMedia(filePath);
+
+                console.log('📤 Sending media...');
+                await sendMediaWithRetry(
+                    client,
+                    msg.from,
+                    media,
+                    { sendAudioAsVoice: false },
+                    isFromCache
+                );
+
+                console.log('✅ AUDIO SENT SUCCESSFULLY');
+
+                // Optional: If you aren't storing long term duplicates outside cache, 
+                // you can clean up the temp file here to save disk space:
+                if (!isFromCache && fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    console.log('🗑️ Temporary download cleared from workspace.');
+                }
+
+            } catch (err) {
+                // Check if the error is a duplicate request identified by downloader.js
+                if (err.isDuplicate) {
+                    console.log("🤫 Silently dropping duplicate request to prevent double messaging.");
+                    return;
+                }
+
+                console.error('❌ PLAY COMMAND FAILED:', err);
+                await msg.reply(
+                    `❌ Failed to play.\n${err.message}`
+                );
+            }
+        });
+    }
+
+    // 🔒 CLOSE
+    if (text === '.close') {
+        handleGroupCommand(msg, true);
+    }
+
+    // 🔓 OPEN
+    if (text === '.open') {
+        handleGroupCommand(msg, false);
+    }
+
+    // ❓ HELP
+    if (text === '.help') {
+        msg.reply(`
+🤖 *WhatsApp Bot Menu*
+
+🎵 *.play <song>* - Search and download music
+🔒 *.close* - Lock group (Admins only)
+🔓 *.open* - Unlock group (Admins only)
+❓ *.help* - Show this menu
+kana uine mubvunzo inbox *Gone with the wind* AKA Jay
+        `.trim());
+    }
+};
+
+// Listens exclusively to incoming messages
+client.on('message', handleIncomingMessage);
+
+/**
+ * Admin helper.
+ */
+function resolveBrowserExecutablePath() {
+    const candidates = [
+        path.join(os.homedir(), '.cache', 'puppeteer', 'chrome', 'win64-146.0.7680.153', 'chrome-win64', 'chrome.exe'),
+        path.join(os.homedir(), '.cache', 'puppeteer', 'chrome-headless-shell', 'win64-146.0.7680.153', 'chrome-headless-shell-win64', 'chrome-headless-shell.exe'),
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    ];
+
+    for (const candidate of candidates) {
+        if (candidate && fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+async function buildMessageMedia(filePath) {
+    try {
+        await fs.promises.access(filePath, fs.constants.R_OK);
+        const stats = await fs.promises.stat(filePath);
+        if (!stats.isFile() || stats.size === 0) {
+            throw new Error(`File is invalid or empty: ${filePath}`);
+        }
+
+        const buffer = await fs.promises.readFile(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeType = ext === '.mp3' ? 'audio/mpeg' : 'application/octet-stream';
+        return new MessageMedia(mimeType, buffer.toString('base64'), path.basename(filePath));
+    } catch (err) {
+        console.error('❌ Failed to build MessageMedia:', err);
+        throw new Error(`Unable to read media file: ${err.message}`);
+    }
+}
+
+async function sendMediaWithRetry(client, chatId, media, options, isFromCache) {
+    const stabilizationDelay = isFromCache ? 1200 : 300;
+    if (stabilizationDelay > 0) {
+        await sleep(stabilizationDelay);
+    }
+
+    let lastError;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+            return await client.sendMessage(chatId, media, options);
+        } catch (err) {
+            lastError = err;
+            console.warn(`⚠️ Media send attempt ${attempt}/2 failed:`, err.message);
+            if (attempt < 2) {
+                await sleep(1000);
+            }
+        }
+    }
+
+    throw lastError || new Error('Media send failed without a captured error.');
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function handleGroupCommand(msg, lock) {
+    try {
+        const chat = await msg.getChat();
+        if (!chat.isGroup) return msg.reply('❌ This command only works in groups.');
+
+        const author = msg.author || msg.from;
+        const participant = chat.participants.find(p => p.id._serialized === author);
+
+        if (!participant?.isAdmin && !participant?.isSuperAdmin) {
+            return msg.reply('❌ Admin required.');
+        }
+
+        await chat.setMessagesAdminsOnly(lock);
+        msg.reply(lock ? '🔒 Group locked to admins.' : '🔓 Group opened for everyone.');
+    } catch (err) {
+        console.error('Group command error:', err);
+        msg.reply('❌ Failed to update group settings.');
+    }
+}
+
+console.log('⏳ Starting client in 5 seconds...');
+setTimeout(() => {
+    console.log('🚀 Initializing client...');
+    client.initialize().catch(err => {
+        console.error('❌ STOP! Initialization failed:', err);
+    });
+}, 5000);
