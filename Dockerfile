@@ -11,8 +11,9 @@ USER pptruser
 # 3. Copy package files with correct user ownership
 COPY --chown=pptruser:pptruser package*.json ./
 
-# 4. Install dependencies and explicitly download the matching Chrome binary
+# 4. Install dependencies, clear the conflicting empty folder, and download Chrome fresh
 RUN npm install
+RUN rm -rf /home/pptruser/.cache/puppeteer
 RUN npx puppeteer browsers install chrome
 
 # 5. Copy the rest of your bot's files with correct user ownership
