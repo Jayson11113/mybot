@@ -5,18 +5,20 @@ USER root
 WORKDIR /usr/src/app
 RUN chown -R pptruser:pptruser /usr/src/app
 
-# 2. Switch to the secure non-root user BEFORE running npm install
+# 2. Clear the base image's pre-installed browser cache to prevent any version conflicts
+RUN rm -rf /home/pptruser/.cache/puppeteer
+
+# 3. Switch to the secure non-root user
 USER pptruser
 
-# 3. Copy package files with correct user ownership
+# 4. Copy package files with correct user ownership
 COPY --chown=pptruser:pptruser package*.json ./
 
-# 4. Install dependencies, clear the conflicting empty folder, and download Chrome fresh
+# 5. Force Puppeteer to download the exact matching browser binary version during npm install
+ENV PUPPETEER_SKIP_DOWNLOAD=false
 RUN npm install
-RUN rm -rf /home/pptruser/.cache/puppeteer
-RUN npx puppeteer browsers install chrome
 
-# 5. Copy the rest of your bot's files with correct user ownership
+# 6. Copy the rest of your bot's files with correct user ownership
 COPY --chown=pptruser:pptruser . .
 
 # Expose the web port for Render
